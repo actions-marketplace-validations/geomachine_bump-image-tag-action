@@ -1,0 +1,137 @@
+name: 'Bump Image Tag'
+description: >-
+  Bumps a container image tag in a Kustomize-based GitOps manifests repo and
+  pushes the commit, so kubectl apply / ArgoCD sees a real diff to act on
+  instead of a static :latest that never changes.
+
+branding:
+  icon: 'upload-cloud'
+  color: 'blue'
+
+inputs:
+  manifests-repo:
+    description: '"owner/repo" of the GitOps manifests repository to bump (e.g. my-org/infra).'
+    required: true
+  manifests-ref:
+    description: 'Branch to check out and push the bump commit to.'
+    required: false
+    default: 'main'
+  manifests-path:
+    description: >-
+      Path within the manifests repo to the Kustomize directory containing
+      the app's kustomization.yaml (e.g. deployment/base/my-app).
+    required: true
+  image:
+    description: 'Full image reference without a tag (e.g. registry.example.com/project/app).'
+    required: true
+  tag:
+    description: 'The new tag to set for the image (e.g. a short git SHA).'
+    required: true
+  token:
+    description: >-
+      A token with write access to manifests-repo (a fine-grained PAT,
+      classic PAT, or a GitHub App installation token). The calling
+      workflow's own GITHUB_TOKEN will not work unless manifests-repo is the
+      same repo the workflow runs in and that token has been granted
+      contents: write.
+    required: true
+  kustomize-version:
+    description: 'Kustomize version to install for running `kustomize edit set image`.'
+    required: false
+    default: '5.5.0'
+  git-user-name:
+    description: 'Git author/committer name for the bump commit.'
+    required: false
+    default: 'bump-image-tag-action[bot]'
+  git-user-email:
+    description: 'Git author/committer email for the bump commit.'
+    required: false
+    default: 'bump-image-tag-action@users.noreply.github.com'
+  commit-message:
+    description: 'Commit message for the bump. Supports {image} and {tag} placeholders.'
+    required: false
+    default: 'chore: bump {image} to {tag}'
+  max-retries:
+    description: >-
+      How many times to fetch, rebase, and retry the push if it races
+      against another concurrent bump landing in the same window.
+    required: false
+    default: '3'
+
+outputs:
+  commit-sha:
+    description: 'SHA of the bump commit that was pushed, or empty if skipped.'
+    value: ${{ steps.bump.outputs.commit-sha }}
+  skipped:
+    description: '"true" if there was nothing to bump (the image was already at this tag).'
+    value: ${{ steps.bump.outputs.skipped }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Kustomize
+      uses: imranismail/setup-kustomize@v2
+      with:
+        kustomize-version: ${{ inputs.kustomize-version }}
+
+    - name: Bump image tag and push
+      id: bump
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        MANIFESTS_REPO: ${{ inputs.manifests-repo }}
+        MANIFESTS_REF: ${{ inputs.manifests-ref }}
+        MANIFESTS_PATH: ${{ inputs.manifests-path }}
+        IMAGE: ${{ inputs.image }}
+        TAG: ${{ inputs.tag }}
+        GIT_USER_NAME: ${{ inputs.git-user-name }}
+        GIT_USER_EMAIL: ${{ inputs.git-user-email }}
+        COMMIT_MESSAGE_TEMPLATE: ${{ inputs.commit-message }}
+        MAX_RETRIES: ${{ inputs.max-retries }}
+      run: |
+        set -euo pipefail
+
+        WORKDIR="$(mktemp -d)"
+        trap 'rm -rf "$WORKDIR"' EXIT
+
+        REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${MANIFESTS_REPO}.git"
+        git clone --branch "$MANIFESTS_REF" --single-branch "$REPO_URL" "$WORKDIR/repo"
+        cd "$WORKDIR/repo"
+
+        git config user.name "$GIT_USER_NAME"
+        git config user.email "$GIT_USER_EMAIL"
+
+        pushd "$MANIFESTS_PATH" >/dev/null
+        kustomize edit set image "${IMAGE}=${IMAGE}:${TAG}"
+        popd >/dev/null
+
+        if git diff --quiet -- "$MANIFESTS_PATH"; then
+          echo "No change needed - $IMAGE is already at tag $TAG in $MANIFESTS_PATH."
+          echo "skipped=true" >> "$GITHUB_OUTPUT"
+          echo "commit-sha=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        COMMIT_MESSAGE="${COMMIT_MESSAGE_TEMPLATE//\{image\}/$IMAGE}"
+        COMMIT_MESSAGE="${COMMIT_MESSAGE//\{tag\}/$TAG}"
+
+        git add "$MANIFESTS_PATH"
+        git commit -m "$COMMIT_MESSAGE"
+
+        attempt=1
+        while true; do
+          if git push origin "HEAD:$MANIFESTS_REF"; then
+            break
+          fi
+          if [ "$attempt" -ge "$MAX_RETRIES" ]; then
+            echo "::error::Failed to push after $MAX_RETRIES attempts (repeated concurrent update conflicts)."
+            exit 1
+          fi
+          echo "Push rejected (attempt $attempt/$MAX_RETRIES) - fetching and rebasing before retrying..."
+          git fetch origin "$MANIFESTS_REF"
+          git rebase "origin/$MANIFESTS_REF"
+          attempt=$((attempt + 1))
+        done
+
+        echo "skipped=false" >> "$GITHUB_OUTPUT"
+        echo "commit-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
