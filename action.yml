@@ -1,8 +1,7 @@
 name: 'Bump Image Tag'
 description: >-
-  Bumps a container image tag in a Kustomize-based GitOps manifests repo and
-  pushes the commit, so kubectl apply / ArgoCD sees a real diff to act on
-  instead of a static :latest that never changes.
+  Bumps a container image tag in a Kustomize GitOps repo and pushes the
+  commit so ArgoCD/kubectl see a real diff.
 
 branding:
   icon: 'upload-cloud'
