@@ -4,7 +4,7 @@ description: >-
   commit so ArgoCD/kubectl see a real diff.
 
 branding:
-  icon: 'upload-cloud'
+  icon: 'tag'
   color: 'blue'
 
 inputs:
