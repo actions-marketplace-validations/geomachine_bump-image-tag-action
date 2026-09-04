@@ -74,6 +74,4 @@ token. Store it as a secret in the calling repo and pass it in via `token`.
   (the common case for one Kustomize directory per app). If retries are
   exhausted (`max-retries`), the step fails loudly rather than silently
   dropping a bump.
-- Before publishing this publicly (e.g. to the GitHub Marketplace), add a
-  `LICENSE` file — MIT is a common, low-friction choice for an action like
-  this, but that's your call to make, not something to inherit by default.
+- Licensed under MIT (see `LICENSE`).
